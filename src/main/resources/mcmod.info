@@ -1,0 +1,25 @@
+{
+	"modListVersion": 2,
+	"modList": [
+		{
+			"modid": "m12patch",
+			"name": "M12Patch",
+			"description": "A MmmMmmMmmMmm Patch",
+			"mcversion": "${mcversion}",
+			"version": "${version}",
+			"authorList": [
+				"Kamesuta",
+			],
+			"credits": "2017 TeamFruit",
+			"dependants": [],
+			"dependencies": ["Forge", "testdummy"],
+			"parent": "",
+			"requiredMods": ["Forge", "testdummy"],
+			"logoFile": "",
+			"screenshots": [],
+			"updateUrl": "",
+			"url": "",
+			"useDependencyInformation": true
+		}
+	]
+}
