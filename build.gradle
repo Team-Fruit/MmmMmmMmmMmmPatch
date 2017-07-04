@@ -1,6 +1,7 @@
 buildscript {
     repositories {
         mavenCentral()
+        jcenter()
         maven {
             name = 'forge'
             url = 'http://files.minecraftforge.net/maven'
@@ -9,41 +10,74 @@ buildscript {
             name = 'sonatype'
             url = 'https://oss.sonatype.org/content/repositories/snapshots/'
         }
+        maven {
+            url 'https://plugins.gradle.org/m2/'
+        }
     }
     dependencies {
         classpath project.forgegradle
     }
 }
 
-apply plugin: 'forge'
-apply plugin: 'curseforge'
+plugins {
+    id 'com.github.johnrengelman.shadow' version '1.2.4'
+    id 'com.matthewprenger.cursegradle' version '1.0.8'
+    id 'com.palantir.git-version' version '0.7.1'
+    id 'co.riiid.gradle' version '0.4.2'
+}
 
-// ext.build = System.getenv().BUILD_NUMBER ?: 'git'
-ext.modversion = "${project.version_major}.${project.version_minor}.${project.version_micro}"
+apply plugin: project.forgegradle_plugin
 
+project.metaClass.isProperty = { propName ->
+    return delegate.hasProperty(propName)&&!delegate.property(propName).isEmpty()
+}
+
+[shadowJar, jar]*.classifier = project.hasProperty('extra_classifier') ? project.extra_classifier : 'universal'
+
+// check libs directory and generate build number if version_qualifier supplied
 group = project.group
-version = "${project.version_minecraft}-${modversion}"
-compileJava.options.encoding = 'UTF-8'
-compileApiJava.options.encoding = 'UTF-8'
-
-idea {
-    module {
-        downloadSources = true
-        inheritOutputDirs = true
+ext.modstaticversion = ext.modversion = "${project.version_major}.${project.version_minor}.${project.version_patch}"
+if (project.isProperty('version_qualifier')) {
+    // auto increase type : hasmicro=meta build number, nomicro=micro number
+    def ismicro = false
+    ext.modbuild = 0
+    if (project.isProperty('version_micro')) {
+        ismicro = true
+        modbuild = 1
     }
+    while (true) {
+        if (ismicro) {
+            modversion = "${modstaticversion}-${project.version_qualifier}.${project.version_micro}+" + String.format('%03d', modbuild)
+        } else {
+            modversion = "${modstaticversion}-${project.version_qualifier}"
+            if (modbuild>0)
+                modversion = "${modversion}.${modbuild}"
+        }
+        version = "${project.version_minecraft}-${modversion}"
+        if (!shadowJar.outputs.files.any { file -> file.exists() })
+            break
+        modbuild++
+    }
+} else {
+    version = "${project.version_minecraft}-${modversion}"
+}
+logger.lifecycle('Output File: ' + shadowJar.outputs.files.getAsPath())
+
+configurations {
+    shade
+    compile.extendsFrom shade
 }
 
-dependencies {
-    compile fileTree(dir: 'lib', include: ['*.jar'])
-}
+[compileJava, compileApiJava, compileTestJava]*.options*.encoding = 'UTF-8'
+sourceCompatibility = targetCompatibility ='1.6'
 
 minecraft {
     version = "${project.version_minecraft}-${project.version_forge}"
 
-    if (project.hasProperty('version_mappings'))
+    if (project.isProperty('version_mappings'))
         mappings = project.version_mappings
 
-    if (!project.hasProperty('run_location'))
+    if (!project.isProperty('run_location'))
         runDir = 'run'
     else
         runDir = run_location.replace('{modid}', project.modid).replace('{mcversion}', project.version_minecraft)
@@ -54,6 +88,9 @@ minecraft {
     replace '${version}', modversion
     replace '${mcversion}', project.version_minecraft
     replace '${forgeversion}', project.version_forge
+}
+
+sourceSets {
 }
 
 processResources {
@@ -70,7 +107,7 @@ processResources {
                 'version'        : modversion,
                 'mcversion'      : project.version_minecraft,
                 'forgeversion'   : project.version_forge,
-                'minforgeversion': project.hasProperty('version_minforge') ? project.version_minforge : project.version_forge,
+                'minforgeversion': project.isProperty('version_minforge') ? project.version_minforge : project.version_forge,
         ])
     }
 
@@ -79,32 +116,83 @@ processResources {
     }
 }
 
-def commonManifest = {
-    if (project.hasProperty('extra_fmlcore'))
+repositories {
+    jcenter()
+    maven {
+        name = 'CurseForge'
+        url = 'https://minecraft.curseforge.com/api/maven/'
+    }
+}
+
+idea {
+    module {
+        downloadSources = true
+        inheritOutputDirs = true
+    }
+}
+
+dependencies {
+    shade fileTree(dir: 'libs/shade', include: '*.jar')
+}
+
+ext.commonManifest = {}
+
+if (file('project.gradle').exists())
+    apply from: 'project.gradle'
+
+commonManifest = commonManifest << {
+    if (project.isProperty('extra_fmlcore'))
         attributes 'FMLCorePlugin': project.extra_fmlcore
-    if (project.hasProperty('extra_fmlmod'))
+    if (project.isProperty('extra_fmlmod'))
         attributes 'FMLCorePluginContainsFMLMod': project.extra_fmlcore
-    if (project.hasProperty('extra_fmlat'))
+    if (project.isProperty('extra_fmlat'))
         attributes 'FMLAT': project.extra_fmlat
 }
 
-jar {
+// println(shadowJar.getSource().getFiles())
+def jarcfg = {
+    from sourceSets.main.output
     from sourceSets.api.output
-    classifier = project.hasProperty('extra_classifier') ? project.extra_classifier : 'universal'
     manifest commonManifest
 }
+shadowJar(jarcfg).configurations = [project.configurations.shade]
+jar(jarcfg).enabled = false
+
+if (!reobf.hasProperty('dependsOn')) {
+    reobf {
+        shadowJar { mappingType = 'SEARGE' }
+    }
+    reobfJar {
+        enabled = false
+    }
+    reobfShadowJar {
+        mustRunAfter 'shadowJar'
+    }
+} else
+    reobf.dependsOn 'shadowJar'
+
+if (tasks.findByPath('sourceJar')==null) {
+    task sourceJar(dependsOn: 'classes', type: Jar) {
+        from sourceSets.main.allSource
+        classifier = 'sources'
+        manifest commonManifest
+    }
+}
+
+sourceJar {
+    from sourceSets.api.allSource
+}
+
+// An Error occured while switching above 1.8 -> under 1.7
+task cleanMakeStart(type: Delete) {
+    delete file(new File(tasks.makeStart.getTemporaryDir(), 'extracted'))
+}
+makeStart.dependsOn('cleanMakeStart')
 
 task devJar(dependsOn: 'classes', type: Jar) {
     from sourceSets.main.output
     from sourceSets.api.output
     classifier = 'dev'
-    manifest commonManifest
-}
-
-task sourceJar(dependsOn: 'classes', type: Jar) {
-    from sourceSets.main.allSource
-    from sourceSets.api.allSource
-    classifier = 'sources'
     manifest commonManifest
 }
 
@@ -115,75 +203,139 @@ task apiJar(dependsOn: 'classes', type: Jar) {
 }
 
 artifacts {
+	archives shadowJar
     archives devJar
     archives sourceJar
     archives apiJar
 }
 
-if (!project.hasProperty('keystore_location'))
-    ext.keystore_location = '.'
+task signJars(dependsOn: 'build') {
+    if (project.isProperty('keystore_location')) {
+        ext.keystore_location = project.keystore_location
+        ext.keystore_alias = project.isProperty('keystore_alias') ? project.keystore_alias : ''
+        ext.keystore_password = project.isProperty('keystore_password') ? project.keystore_password : ''
 
-if (!project.hasProperty('keystore_alias'))
-    ext.keystore_alias = ''
+        inputs.dir shadowJar.destinationDir
+        inputs.file keystore_location
+        inputs.property 'keystore_alias', keystore_alias
+        inputs.property 'keystore_password', keystore_password
+        outputs.dir shadowJar.destinationDir
 
-if (!project.hasProperty('keystore_password'))
-    ext.keystore_password = ''
+        doLast {
+            [shadowJar, devJar, sourceJar, apiJar].each { eachtask ->
+                eachtask.outputs.files.each { file ->
+                    if (!file.getPath().endsWith('.jar'))
+                        return
 
-task signJars(dependsOn: ['reobf', 'devJar', 'sourceJar', 'apiJar']) {
-    inputs.dir jar.destinationDir
-    inputs.file keystore_location
-    inputs.property 'keystore_alias', keystore_alias
-    inputs.property 'keystore_password', keystore_password
-    outputs.dir jar.destinationDir
+                    logger.lifecycle "signing ${file}"
+                    ant.signjar(
+                            destDir: file.getParentFile(),
+                            jar: file,
+                            keystore: keystore_location,
+                            alias: keystore_alias,
+                            storepass: keystore_password
+                    )
+                }
+            }
+        }
+    } else
+        enabled = false
+}
 
-    onlyIf {
-        return keystore_location != '.'
-    }
+def deploy_loc_name_primary = "deploy_location_${project.name}_${project.version_minecraft}"
+def deploy_loc_name_secondary = "deploy_location_${project.version_minecraft}"
+task deploy(dependsOn: 'build', type: Copy) {
+    mustRunAfter 'signJars'
 
-    doLast {
-        jar.destinationDir.eachFile { file ->
-            if (!file.getPath().endsWith('.jar'))
-                return;
+	def deploy_loc
+	if (project.isProperty(deploy_loc_name_primary))
+		deploy_loc = project.property(deploy_loc_name_primary)
+	else if (project.isProperty(deploy_loc_name_secondary))
+		deploy_loc = project.property(deploy_loc_name_secondary)
 
-            logger.lifecycle "signing ${file}"
-            ant.signjar(
-                    destDir: file.getParentFile(),
-                    jar: file,
-                    keystore: keystore_location,
-                    alias: keystore_alias,
-                    storepass: keystore_password
-            )
+    if (project.isProperty('deploy_name') && deploy_loc!=null) {
+	    def deploy_name = project.deploy_name
+        def destlocdir = file(deploy_loc)
+
+        from project.tasks.shadowJar.outputs.files.singleFile
+        into destlocdir
+
+        rename { String fileName ->
+            fileName = deploy_name
+        }
+
+        eachFile { file ->
+            def path = file.relativePath.getFile(destlocdir)
+            logger.lifecycle "copying to ${path}"
+        }
+    } else
+        enabled = false
+}
+
+def textChangelog = project.isProperty('extra_changelog') ? project.extra_changelog : ''
+if (project.isProperty('extra_changelog_location')) {
+    def fileChangelog = file('changelog.md')
+    textChangelog = fileChangelog.exists()?fileChangelog.getText('UTF-8'):''
+}
+def pre = project.isProperty('version_qualifier')
+
+if (project.isProperty('api_key_curseforge') && project.isProperty('extra_curseforge_id')) {
+    curseforge {
+        tasks.curseforge.mustRunAfter 'signJars'
+        apiKey = project.api_key_curseforge
+        project {
+            id = project.extra_curseforge_id
+
+            changelogType = 'markdown'
+            changelog = textChangelog
+
+            def releasetype = 'alpha'
+            if (pre) {
+                if (project.version_qualifier=='beta')
+                    releasetype = 'beta'
+            } else
+                releasetype = 'release'
+            releaseType = releasetype
+
+            mainArtifact(shadowJar) {
+                displayName = "${shadowJar.baseName}-${shadowJar.version}"
+            }
+            addArtifact(devJar) {
+                displayName = "${devJar.baseName}-${devJar.version}-${devJar.classifier}"
+            }
+            addArtifact(sourceJar) {
+                displayName = "${sourceJar.baseName}-${sourceJar.version}-${sourceJar.classifier}"
+            }
+            addArtifact(apiJar) {
+                displayName = "${apiJar.baseName}-${apiJar.version}-${apiJar.classifier}"
+            }
+
+            relations {
+            }
         }
     }
-}
+} else
+    tasks.curseforge.enabled = false
 
-if (!project.hasProperty('release_location'))
-    ext.release_location = '.'
-else
-    ext.release_location = release_location.replace('{modid}', project.modid).replace('{mcversion}', project.version_minecraft).replace('{version}', version)
-
-task release(dependsOn: 'signJars', type: Copy) {
-    from project.tasks.jar.destinationDir
-    into project.file(project.release_location)
-
-    eachFile { file ->
-        logger.lifecycle "copying ${file}"
+if (project.isProperty('api_key_github') && project.isProperty('extra_github_owner') && project.isProperty('extra_github_repo')) {
+    github {
+        tasks.githubRelease.dependsOn 'build'
+        prerelease = pre
+        owner = project.extra_github_owner
+        repo = project.extra_github_repo
+        token = project.api_key_github
+        tagName = shadowJar.version
+        targetCommitish = plugins.findPlugin('com.palantir.git-version').gitRepo(project).getRepository().getRef('HEAD').getObjectId().name()
+        def title = (project.isProperty('extra_github_title')) ? project.release_title : shadowJar.version
+        name = title.replace('{version}', shadowJar.version)
+        body = textChangelog
+        draft = false
+        assets = [
+                shadowJar.outputs.files.getAsPath().tr('\\','/'),
+                devJar.outputs.files.getAsPath().tr('\\','/'),
+                sourceJar.outputs.files.getAsPath().tr('\\','/'),
+                apiJar.outputs.files.getAsPath().tr('\\','/'),
+        ]
     }
-
-    onlyIf {
-        return project.release_location != '.'
-    }
-}
-
-if (project.hasProperty('api_key_curseforge') && project.hasProperty('extra_curseforge_id')) {
-    curse {
-        dependsOn signJars
-        releaseType = project.hasProperty('extra_curseforge_releasetype') ? project.extra_curseforge_releasetype : 'release'
-        apiKey = project.api_key_curseforge
-        projectId = project.extra_curseforge_id
-        changelog = ''
-
-        additionalArtifact devJar, sourceJar, apiJar
-        relatedProject 'lunatriuscore'
-    }
-}
+} else
+    tasks.githubRelease.enabled = false

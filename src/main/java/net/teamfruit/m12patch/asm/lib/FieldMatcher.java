@@ -10,7 +10,7 @@ package net.teamfruit.m12patch.asm.lib;
 
 import javax.annotation.Nonnull;
 
-import cpw.mods.fml.common.asm.transformers.deobf.FMLDeobfuscatingRemapper;
+import net.minecraftforge.fml.common.asm.transformers.deobf.FMLDeobfuscatingRemapper;
 
 public class FieldMatcher {
 	private final @Nonnull String clsName;

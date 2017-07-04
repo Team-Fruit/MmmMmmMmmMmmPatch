@@ -4,7 +4,7 @@ import java.util.Map;
 
 import javax.annotation.Nullable;
 
-import cpw.mods.fml.relauncher.IFMLLoadingPlugin;
+import net.minecraftforge.fml.relauncher.IFMLLoadingPlugin;
 
 public class M12PatchCorePlugin implements IFMLLoadingPlugin {
 	@Override
